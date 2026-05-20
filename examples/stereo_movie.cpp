@@ -39,7 +39,9 @@ int main(int argc, char* argv[])
     "{ sp subpixel | true | Compute subpixel accuracy }"
     "{ platform_idx | 0 | OpenCL plarform index }"
     "{ device_idx | 0 | OpenCL device index }"
-    "{ np num_path | 4 | Num path to optimize, 4 or 8 }";
+    "{ np num_path | 4 | Num path to optimize, 4 or 8 }"
+    "{ no_display | false | Disable OpenCV display windows }"
+    "{ output | | Optional output disparity image path }";
 
     cv::CommandLineParser parser(argc, argv, keys);
     if (parser.has("help"))
@@ -51,6 +53,22 @@ int main(int argc, char* argv[])
     left_filename_fmt = parser.get<std::string>(0);
     right_filename_fmt = parser.get<std::string>(1);
     int disp_size = parser.get<int>("max_disparity");
+    std::string output_path = parser.get<std::string>("output");
+    bool display_enabled = !parser.get<bool>("no_display");
+#ifndef _WIN32
+    display_enabled = display_enabled && (std::getenv("DISPLAY") != nullptr || std::getenv("WAYLAND_DISPLAY") != nullptr);
+#endif
+    if (!display_enabled)
+    {
+        if (output_path.empty())
+        {
+            std::cout << "Display disabled; use --output to save the disparity image." << std::endl;
+        }
+        else
+        {
+            std::cout << "Display disabled; saving disparity image to: " << output_path << std::endl;
+        }
+    }
 
     cv::VideoCapture left_capture(left_filename_fmt);
     cv::VideoCapture right_capture(right_filename_fmt);
@@ -120,7 +138,8 @@ int main(int argc, char* argv[])
             cl_device,
             params);
 
-        cv::Mat img1c, img2c;
+        cv::Mat img1c = left;
+        cv::Mat img2c = right;
 
         bool should_close = false;
         int disp_type = output_depth == 8 ? CV_8UC1 : CV_16UC1;
@@ -133,22 +152,19 @@ int main(int argc, char* argv[])
 
         while ((!should_close))
         {
-            left_capture.read(img1c);
-            img1c = convertTo4size(img1c);
-
             if (img1c.empty())
             {
                 std::cout << "Failed to read left image stream!" << std::endl;
                 break;
             }
-            right_capture.read(img2c);
-            img2c = convertTo4size(img2c);
-
             if (img2c.empty())
             {
                 std::cout << "Failed to read right image stream!" << std::endl;
                 break;
             }
+
+            img1c = convertTo4size(img1c);
+            img2c = convertTo4size(img2c);
 
             if (img1c.channels() != 1)
             {
@@ -167,7 +183,7 @@ int main(int argc, char* argv[])
             auto t = std::chrono::steady_clock::now();
             //ssgm.execute(left.data, right.data, reinterpret_cast<uint16_t*>(disp.data));
             ssgm.execute(d_left, d_right, d_disp);
-            std::chrono::milliseconds dur = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t);
+            const double dur_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
             clEnqueueReadBuffer(cl_queue, d_disp, true, 0, width * height * output_depth / 8, disp.data, 0, nullptr, nullptr);
 
 
@@ -178,19 +194,39 @@ int main(int argc, char* argv[])
                 ? static_cast<uint8_t>(ssgm.get_invalid_disparity())
                 : static_cast<uint16_t>(ssgm.get_invalid_disparity());
             disparity_color.setTo(cv::Scalar(0, 0, 0), disp == invalid_disp);
-            const int64_t fps = 1000 / dur.count();
-            cv::putText(disparity_color, "sgm execution time: " + std::to_string(dur.count()) + "[msec] " + std::to_string(fps) + "[FPS]",
+            const double fps = dur_ms > 0.0 ? 1000.0 / dur_ms : 0.0;
+            std::cout << "SGM execution time: " << dur_ms << " ms, " << fps << " FPS" << std::endl;
+            cv::putText(disparity_color, "sgm execution time: " + std::to_string(dur_ms) + "[msec] " + std::to_string(fps) + "[FPS]",
                 cv::Point(50, 50), 2, 0.75, cv::Scalar(255, 255, 255));
 
 
-            cv::imshow("left imagep", left);
-            cv::imshow("disp", disparity_color);
-
-
-            int key = cv::waitKey(1);
-            if (key == 27)
+            if (!output_path.empty())
             {
-                should_close = true;
+                if (cv::imwrite(output_path, disparity_color))
+                {
+                    std::cout << "Saved disparity image: " << output_path << std::endl;
+                }
+                else
+                {
+                    std::cerr << "Failed to save disparity image: " << output_path << std::endl;
+                }
+            }
+
+            if (display_enabled)
+            {
+                cv::imshow("left imagep", left);
+                cv::imshow("disp", disparity_color);
+
+                int key = cv::waitKey(1);
+                if (key == 27)
+                {
+                    should_close = true;
+                }
+            }
+
+            if (!left_capture.read(img1c) || !right_capture.read(img2c))
+            {
+                break;
             }
         }
         clReleaseMemObject(d_left);
@@ -236,8 +272,12 @@ std::tuple<cl_context, cl_device_id> initCLCTX(int platform_idx, int device_idx)
         std::string platform_name;
         platform_name.resize(name_size_in_bytes);
         clGetPlatformInfo(platform_ids[platform_idx], CL_PLATFORM_NAME,
-            platform_name.size(),
+            name_size_in_bytes,
             (void*)platform_name.data(), nullptr);
+        if (!platform_name.empty() && platform_name.back() == '\0')
+        {
+            platform_name.pop_back();
+        }
         std::cout << "Platform name: " << platform_name << std::endl;
     }
     {
@@ -246,8 +286,12 @@ std::tuple<cl_context, cl_device_id> initCLCTX(int platform_idx, int device_idx)
         std::string dev_name;
         dev_name.resize(name_size_in_bytes);
         clGetDeviceInfo(cl_devices[device_idx], CL_DEVICE_NAME,
-            dev_name.size(),
+            name_size_in_bytes,
             (void*)dev_name.data(), nullptr);
+        if (!dev_name.empty() && dev_name.back() == '\0')
+        {
+            dev_name.pop_back();
+        }
         std::cout << "Device name: " << dev_name << std::endl;
     }
     return std::make_tuple(cl_ctx, cl_device);

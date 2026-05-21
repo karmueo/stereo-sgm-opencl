@@ -10,6 +10,7 @@ set(CL_TARGET_OPENCL_VERSION 120 CACHE STRING "OpenCL target version")
 message(STATUS "OpenCL target verison: ${CL_TARGET_OPENCL_VERSION}")
 
 find_package(OpenCL REQUIRED)
+include(CTest)
 
 include(CMakeRC.cmake)
 
@@ -99,6 +100,20 @@ install(FILES ${LIBSGM_PUBLIC_HDRS} DESTINATION include/libsgm_ocl/libsgm_ocl)
 
 if (BUILD_EXAMPLES)
     find_package(OpenCV REQUIRED CONFIG)
-    add_executable(stereo_movie examples/stereo_movie.cpp)
+    add_executable(stereo_movie examples/stereo_movie.cpp examples/stereo_rectification.cpp)
+    target_include_directories(stereo_movie PRIVATE examples)
     target_link_libraries(stereo_movie PRIVATE libsgm_ocl::libsgm_ocl ${OpenCV_LIBRARIES})
+    add_executable(stereo_batch examples/stereo_batch.cpp examples/stereo_rectification.cpp)
+    target_include_directories(stereo_batch PRIVATE examples)
+    target_link_libraries(stereo_batch PRIVATE libsgm_ocl::libsgm_ocl ${OpenCV_LIBRARIES})
+endif()
+
+if (BUILD_TESTING)
+    add_executable(test_stereo_rectification
+        tests/test_stereo_rectification.cpp
+        examples/stereo_rectification.cpp
+    )
+    target_include_directories(test_stereo_rectification PRIVATE examples)
+    target_link_libraries(test_stereo_rectification PRIVATE ${OpenCV_LIBRARIES})
+    add_test(NAME test_stereo_rectification COMMAND test_stereo_rectification)
 endif()

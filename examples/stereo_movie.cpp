@@ -15,8 +15,13 @@ limitations under the License.
 */
 
 #include <stdlib.h>
+#include <chrono>
 #include <iostream>
+#include <memory>
+#include <stdexcept>
 #include <string>
+#include <tuple>
+#include <vector>
 #include <opencv2/core/core.hpp>
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
@@ -24,6 +29,7 @@ limitations under the License.
 #include <libsgm_ocl/libsgm_ocl.h>
 #include <iomanip>
 #include <sstream>
+#include "stereo_rectification.h"
 
 void context_error_callback(const char* errinfo, const void* private_info, size_t cb, void* user_data);
 std::tuple<cl_context, cl_device_id> initCLCTX(int platform_idx, int device_idx);
@@ -41,7 +47,9 @@ int main(int argc, char* argv[])
     "{ device_idx | 0 | OpenCL device index }"
     "{ np num_path | 4 | Num path to optimize, 4 or 8 }"
     "{ no_display | false | Disable OpenCV display windows }"
-    "{ output | | Optional output disparity image path }";
+    "{ output | | Optional output disparity image path }"
+    "{ calib | stereo-camchain.yaml | Stereo calibration YAML path }"
+    "{ no_rectify | false | Disable stereo rectification }";
 
     cv::CommandLineParser parser(argc, argv, keys);
     if (parser.has("help"))
@@ -85,9 +93,19 @@ int main(int argc, char* argv[])
     left_capture.set(cv::CAP_PROP_POS_FRAMES, 0.0);
     right_capture.set(cv::CAP_PROP_POS_FRAMES, 0.0);
 
-    cv::Mat left, right;
-    left_capture >> left;
-    right_capture >> right;
+    std::unique_ptr<stereo_examples::StereoRectifier> rectifier;
+    try
+    {
+        if (!parser.get<bool>("no_rectify"))
+        {
+            rectifier.reset(new stereo_examples::StereoRectifier(parser.get<std::string>("calib")));
+        }
+    }
+    catch (const std::exception& e)
+    {
+        std::cerr << "Error: " << e.what() << std::endl;
+        std::exit(EXIT_FAILURE);
+    }
 
     auto convertTo4size = [](const cv::Mat& m) -> cv::Mat {
         int new_size_x = (m.cols / 4) * 4;
@@ -95,8 +113,61 @@ int main(int argc, char* argv[])
         cv::Mat ret = m(cv::Rect(0, 0, new_size_x, new_size_y)).clone();
         return ret;
     };
-    left = convertTo4size(left);
-    right = convertTo4size(right);
+
+    auto prepare_pair = [&](const cv::Mat& raw_left, const cv::Mat& raw_right, cv::Mat& left_gray, cv::Mat& right_gray) {
+        if (raw_left.empty())
+        {
+            throw std::runtime_error("failed to read left image stream");
+        }
+        if (raw_right.empty())
+        {
+            throw std::runtime_error("failed to read right image stream");
+        }
+
+        cv::Mat prepared_left = raw_left;
+        cv::Mat prepared_right = raw_right;
+        if (rectifier)
+        {
+            rectifier->rectify(raw_left, raw_right, prepared_left, prepared_right);
+        }
+
+        prepared_left = convertTo4size(prepared_left);
+        prepared_right = convertTo4size(prepared_right);
+        if (prepared_left.empty() || prepared_right.empty())
+        {
+            throw std::runtime_error("image is too small after crop");
+        }
+        if (prepared_left.size() != prepared_right.size() || prepared_left.type() != prepared_right.type())
+        {
+            throw std::runtime_error("mismatch input image size or type");
+        }
+
+        if (prepared_left.channels() != 1)
+        {
+            cv::cvtColor(prepared_left, left_gray, cv::COLOR_BGR2GRAY);
+            cv::cvtColor(prepared_right, right_gray, cv::COLOR_BGR2GRAY);
+        }
+        else
+        {
+            left_gray = prepared_left;
+            right_gray = prepared_right;
+        }
+    };
+
+    cv::Mat img1c, img2c;
+    left_capture >> img1c;
+    right_capture >> img2c;
+
+    cv::Mat left, right;
+    try
+    {
+        prepare_pair(img1c, img2c, left, right);
+    }
+    catch (const std::exception& e)
+    {
+        std::cerr << "Error: " << e.what() << std::endl;
+        std::exit(EXIT_FAILURE);
+    }
 
     if (left.size() != right.size() || left.type() != right.type())
     {
@@ -119,8 +190,24 @@ int main(int argc, char* argv[])
     cl_device_id cl_device;
     int platform_idx = parser.get<int>("platform_idx");
     int device_idx = parser.get<int>("device_idx");
-    std::tie(cl_ctx, cl_device) = initCLCTX(platform_idx, device_idx);
-    cl_command_queue cl_queue = clCreateCommandQueue(cl_ctx, cl_device, 0, nullptr);
+    try
+    {
+        std::tie(cl_ctx, cl_device) = initCLCTX(platform_idx, device_idx);
+    }
+    catch (const std::exception& e)
+    {
+        std::cerr << "Error: " << e.what() << std::endl;
+        return EXIT_FAILURE;
+    }
+
+    cl_int queue_err = CL_SUCCESS;
+    cl_command_queue cl_queue = clCreateCommandQueue(cl_ctx, cl_device, 0, &queue_err);
+    if (queue_err != CL_SUCCESS || cl_queue == nullptr)
+    {
+        std::cerr << "Error creating command queue: " << queue_err << std::endl;
+        clReleaseContext(cl_ctx);
+        return EXIT_FAILURE;
+    }
 
     sgm::cl::Parameters params;
     int input_depth = 8;
@@ -137,9 +224,6 @@ int main(int argc, char* argv[])
             cl_ctx,
             cl_device,
             params);
-
-        cv::Mat img1c = left;
-        cv::Mat img2c = right;
 
         bool should_close = false;
         int disp_type = output_depth == 8 ? CV_8UC1 : CV_16UC1;
@@ -163,18 +247,19 @@ int main(int argc, char* argv[])
                 break;
             }
 
-            img1c = convertTo4size(img1c);
-            img2c = convertTo4size(img2c);
-
-            if (img1c.channels() != 1)
+            try
             {
-                cv::cvtColor(img1c, left, cv::COLOR_BGR2GRAY);
-                cv::cvtColor(img2c, right, cv::COLOR_BGR2GRAY);
+                prepare_pair(img1c, img2c, left, right);
             }
-            else
+            catch (const std::exception& e)
             {
-                left = img1c;
-                right = img2c;
+                std::cerr << "Error: " << e.what() << std::endl;
+                break;
+            }
+            if (left.size() != img_size || right.size() != img_size || left.type() != right.type())
+            {
+                std::cerr << "mismatch input image size or type" << std::endl;
+                break;
             }
 
             clEnqueueWriteBuffer(cl_queue, d_left, true, 0, width * height, left.data, 0, nullptr, nullptr);
@@ -242,36 +327,56 @@ int main(int argc, char* argv[])
 
 std::tuple<cl_context, cl_device_id> initCLCTX(int platform_idx, int device_idx)
 {
-    cl_uint num_platform;
-    clGetPlatformIDs(0, nullptr, &num_platform);
-    assert((size_t)platform_idx < num_platform);
-    std::vector<cl_platform_id> platform_ids(num_platform);
-    clGetPlatformIDs(num_platform, platform_ids.data(), nullptr);
-    if(platform_ids.size() <= platform_idx)
+    cl_uint num_platform = 0;
+    cl_int err = clGetPlatformIDs(0, nullptr, &num_platform);
+    if (err != CL_SUCCESS || num_platform == 0)
     {
-        std::cout << "Wrong platform index!" << std::endl;
-        exit(0);
+        throw std::runtime_error("no OpenCL platforms found");
     }
-    cl_uint num_devices;
-    clGetDeviceIDs(platform_ids[platform_idx], CL_DEVICE_TYPE_GPU, 0, nullptr, &num_devices);
-    assert((size_t)device_idx < num_devices);
-    std::vector<cl_device_id> cl_devices(num_devices);
-    clGetDeviceIDs(platform_ids[platform_idx], CL_DEVICE_TYPE_GPU, num_devices, cl_devices.data(), nullptr);
-    cl_device_id cl_device = cl_devices[device_idx];
-    cl_int err;
-    cl_context cl_ctx = clCreateContext(nullptr, 1, &cl_devices[device_idx], context_error_callback, NULL, &err);
+    if (platform_idx < 0 || static_cast<cl_uint>(platform_idx) >= num_platform)
+    {
+        throw std::runtime_error("platform_idx is out of range");
+    }
 
+    std::vector<cl_platform_id> platform_ids(num_platform);
+    err = clGetPlatformIDs(num_platform, platform_ids.data(), nullptr);
     if (err != CL_SUCCESS)
     {
-        std::cout << "Error creating context " << err << std::endl;
-        throw std::runtime_error("Error creating context!");
+        throw std::runtime_error("failed to enumerate OpenCL platforms, error " + std::to_string(err));
+    }
+
+    cl_platform_id platform = platform_ids[platform_idx];
+    cl_uint num_devices = 0;
+    err = clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 0, nullptr, &num_devices);
+    if (err != CL_SUCCESS || num_devices == 0)
+    {
+        throw std::runtime_error("no GPU OpenCL devices found on platform " + std::to_string(platform_idx));
+    }
+    if (device_idx < 0 || static_cast<cl_uint>(device_idx) >= num_devices)
+    {
+        throw std::runtime_error("device_idx is out of range");
+    }
+
+    std::vector<cl_device_id> cl_devices(num_devices);
+    err = clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, num_devices, cl_devices.data(), nullptr);
+    if (err != CL_SUCCESS)
+    {
+        throw std::runtime_error("failed to enumerate OpenCL GPU devices, error " + std::to_string(err));
+    }
+
+    cl_device_id cl_device = cl_devices[device_idx];
+    cl_context cl_ctx = clCreateContext(nullptr, 1, &cl_devices[device_idx], context_error_callback, NULL, &err);
+
+    if (err != CL_SUCCESS || cl_ctx == nullptr)
+    {
+        throw std::runtime_error("failed to create OpenCL context, error " + std::to_string(err));
     }
     {
         size_t name_size_in_bytes;
-        clGetPlatformInfo(platform_ids[platform_idx], CL_PLATFORM_NAME, 0, nullptr, &name_size_in_bytes);
+        clGetPlatformInfo(platform, CL_PLATFORM_NAME, 0, nullptr, &name_size_in_bytes);
         std::string platform_name;
         platform_name.resize(name_size_in_bytes);
-        clGetPlatformInfo(platform_ids[platform_idx], CL_PLATFORM_NAME,
+        clGetPlatformInfo(platform, CL_PLATFORM_NAME,
             name_size_in_bytes,
             (void*)platform_name.data(), nullptr);
         if (!platform_name.empty() && platform_name.back() == '\0')

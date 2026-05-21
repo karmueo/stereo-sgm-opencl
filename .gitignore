@@ -2,3 +2,9 @@ b/
 build/
 Examples/
 .vscode/
+tmp.txt
+output/
+data
+*.pyc
+docs/superpowers
+.cache

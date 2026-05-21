@@ -21,7 +21,7 @@ PathAggregation<MAX_DISPARITY>::PathAggregation(cl_context ctx, cl_device_id dev
     for (size_t i = 0; i < MAX_NUM_PATHS; ++i)
     {
         cl_int err;
-        m_streams[i] = clCreateCommandQueue(ctx, device, 0, &err);
+        m_streams[i] = create_ocl_command_queue(ctx, device, &err);
         CHECK_OCL_ERROR(err, "Failed to create command queue");
     }
 }
@@ -79,6 +79,9 @@ void PathAggregation<MAX_DISPARITY>::enqueue(const DeviceBuffer<feature_type>& l
 
     cl_int err = clFinish(stream);
     CHECK_OCL_ERROR(err, "Error finishing queue");
+    const bool use_vertical_fast_path = path_type == PathType::SCAN_4PATH
+        && MAX_DISPARITY == 128
+        && m_up2down.m_tuning.use_mali_vertical_128;
     m_up2down.enqueue(
         m_sub_buffers[0],
         left,
@@ -88,7 +91,8 @@ void PathAggregation<MAX_DISPARITY>::enqueue(const DeviceBuffer<feature_type>& l
         p1,
         p2,
         min_disp,
-        m_streams[0]
+        m_streams[0],
+        use_vertical_fast_path
     );
     m_down2up.enqueue(
         m_sub_buffers[1],
@@ -99,7 +103,8 @@ void PathAggregation<MAX_DISPARITY>::enqueue(const DeviceBuffer<feature_type>& l
         p1,
         p2,
         min_disp,
-        m_streams[1]
+        m_streams[1],
+        use_vertical_fast_path
     );
     m_left2right.enqueue(
         m_sub_buffers[2],
@@ -257,7 +262,7 @@ inline void VerticalPathAggregation<DIRECTION, MAX_DISPARITY>::init()
          //Vertical path aggregation templates
         std::string kernel_DP_BLOCK_SIZE = "#define DP_BLOCK_SIZE " + std::to_string(DP_BLOCK_SIZE) + "\n";
         std::string kernel_SUBGROUP_SIZE = "#define SUBGROUP_SIZE " + std::to_string(SUBGROUP_SIZE) + "\n";
-        std::string kernel_BLOCK_SIZE = "#define BLOCK_SIZE " + std::to_string(BLOCK_SIZE) + "\n";
+        std::string kernel_BLOCK_SIZE = "#define BLOCK_SIZE " + std::to_string(m_tuning.path_block_size) + "\n";
         std::string kernel_SIZE = "#define SIZE " + std::to_string(SUBGROUP_SIZE) + "\n";
         kernel_src = std::regex_replace(kernel_src, std::regex("@DP_BLOCK_SIZE@"), kernel_DP_BLOCK_SIZE);
         kernel_src = std::regex_replace(kernel_src, std::regex("@SUBGROUP_SIZE@"), kernel_SUBGROUP_SIZE);
@@ -270,6 +275,26 @@ inline void VerticalPathAggregation<DIRECTION, MAX_DISPARITY>::init()
         m_program.init(m_cl_ctx, m_cl_device, kernel_src);
         //DEBUG
         m_kernel = m_program.getKernel("aggregate_vertical_path_kernel");
+    }
+}
+
+template<int DIRECTION, unsigned int MAX_DISPARITY>
+inline void VerticalPathAggregation<DIRECTION, MAX_DISPARITY>::initFast()
+{
+    if (m_fast_kernel == nullptr)
+    {
+        auto fs = cmrc::ocl_sgm::get_filesystem();
+        auto kernel_inttypes = fs.open("src/ocl/inttypes.cl");
+        auto kernel_path_aggregation_vertical = fs.open("src/ocl/path_aggregation_vertical_mali_128.cl");
+
+        std::string kernel_src = std::string(kernel_inttypes.begin(), kernel_inttypes.end())
+            + std::string(kernel_path_aggregation_vertical.begin(), kernel_path_aggregation_vertical.end());
+
+        std::string kernel_direction = "#define DIRECTION " + std::to_string(DIRECTION) + "\n";
+        kernel_src = std::regex_replace(kernel_src, std::regex("@DIRECTION@"), kernel_direction);
+
+        m_fast_program.init(m_cl_ctx, m_cl_device, kernel_src);
+        m_fast_kernel = m_fast_program.getKernel("aggregate_vertical_path_mali_128_kernel");
     }
 }
 //down2up
@@ -315,7 +340,7 @@ inline void HorizontalPathAggregation<DIRECTION, MAX_DISPARITY>::init()
          //path aggregation common templates
         std::string kernel_DP_BLOCK_SIZE = "#define DP_BLOCK_SIZE " + std::to_string(DP_BLOCK_SIZE) + "\n";
         std::string kernel_SUBGROUP_SIZE = "#define SUBGROUP_SIZE " + std::to_string(SUBGROUP_SIZE) + "\n";
-        std::string kernel_BLOCK_SIZE = "#define BLOCK_SIZE " + std::to_string(BLOCK_SIZE) + "\n";
+        std::string kernel_BLOCK_SIZE = "#define BLOCK_SIZE " + std::to_string(m_tuning.path_block_size) + "\n";
         std::string kernel_SIZE = "#define SIZE " + std::to_string(SUBGROUP_SIZE) + "\n";
         kernel_src = std::regex_replace(kernel_src, std::regex("@DP_BLOCK_SIZE@"), kernel_DP_BLOCK_SIZE);
         kernel_src = std::regex_replace(kernel_src, std::regex("@SUBGROUP_SIZE@"), kernel_SUBGROUP_SIZE);
@@ -372,7 +397,7 @@ void sgm::cl::ObliquePathAggregation<X_DIRECTION, Y_DIRECTION, MAX_DISPARITY>::i
          //path aggregation common templates
         std::string kernel_DP_BLOCK_SIZE = "#define DP_BLOCK_SIZE " + std::to_string(DP_BLOCK_SIZE) + "\n";
         std::string kernel_SUBGROUP_SIZE = "#define SUBGROUP_SIZE " + std::to_string(SUBGROUP_SIZE) + "\n";
-        std::string kernel_BLOCK_SIZE = "#define BLOCK_SIZE " + std::to_string(BLOCK_SIZE) + "\n";
+        std::string kernel_BLOCK_SIZE = "#define BLOCK_SIZE " + std::to_string(m_tuning.path_block_size) + "\n";
         std::string kernel_SIZE = "#define SIZE " + std::to_string(SUBGROUP_SIZE) + "\n";
         kernel_src = std::regex_replace(kernel_src, std::regex("@DP_BLOCK_SIZE@"), kernel_DP_BLOCK_SIZE);
         kernel_src = std::regex_replace(kernel_src, std::regex("@SUBGROUP_SIZE@"), kernel_SUBGROUP_SIZE);

@@ -30,6 +30,7 @@ limitations under the License.
 #include <iomanip>
 #include <sstream>
 #include "stereo_rectification.h"
+#include "ocl_profiler.h"
 
 void context_error_callback(const char* errinfo, const void* private_info, size_t cb, void* user_data);
 std::tuple<cl_context, cl_device_id> initCLCTX(int platform_idx, int device_idx);
@@ -42,14 +43,15 @@ int main(int argc, char* argv[])
     "{ @img_source_left | | Left images }"
     "{ @img_source_right |  | Right images }"
     "{ md max_disparity | 128 | Maximum disparity }"
-    "{ sp subpixel | true | Compute subpixel accuracy }"
+    "{ sp subpixel | false | Compute subpixel accuracy }"
     "{ platform_idx | 0 | OpenCL plarform index }"
     "{ device_idx | 0 | OpenCL device index }"
     "{ np num_path | 4 | Num path to optimize, 4 or 8 }"
     "{ no_display | false | Disable OpenCV display windows }"
     "{ output | | Optional output disparity image path }"
     "{ calib | stereo-camchain.yaml | Stereo calibration YAML path }"
-    "{ no_rectify | false | Disable stereo rectification }";
+    "{ no_rectify | false | Disable stereo rectification }"
+    "{ profile | false | Print OpenCL kernel profiling }";
 
     cv::CommandLineParser parser(argc, argv, keys);
     if (parser.has("help"))
@@ -62,6 +64,15 @@ int main(int argc, char* argv[])
     right_filename_fmt = parser.get<std::string>(1);
     int disp_size = parser.get<int>("max_disparity");
     std::string output_path = parser.get<std::string>("output");
+    const bool profile_enabled = parser.get<bool>("profile");
+    if (profile_enabled)
+    {
+#ifdef _WIN32
+        _putenv_s("LIBSGM_OCL_PROFILE", "1");
+#else
+        setenv("LIBSGM_OCL_PROFILE", "1", 1);
+#endif
+    }
     bool display_enabled = !parser.get<bool>("no_display");
 #ifndef _WIN32
     display_enabled = display_enabled && (std::getenv("DISPLAY") != nullptr || std::getenv("WAYLAND_DISPLAY") != nullptr);
@@ -201,7 +212,7 @@ int main(int argc, char* argv[])
     }
 
     cl_int queue_err = CL_SUCCESS;
-    cl_command_queue cl_queue = clCreateCommandQueue(cl_ctx, cl_device, 0, &queue_err);
+    cl_command_queue cl_queue = sgm::cl::create_ocl_command_queue(cl_ctx, cl_device, &queue_err);
     if (queue_err != CL_SUCCESS || cl_queue == nullptr)
     {
         std::cerr << "Error creating command queue: " << queue_err << std::endl;

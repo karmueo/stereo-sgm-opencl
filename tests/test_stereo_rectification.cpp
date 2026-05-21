@@ -53,6 +53,25 @@ void test_loads_calibration()
     require(rectifier.image_size() == cv::Size(64, 48), "unexpected calibration resolution");
 }
 
+void test_converts_kalibr_transform_to_opencv_stereo_transform()
+{
+    const cv::Mat rotation_cam1_from_cam0 = (cv::Mat_<double>(3, 3) << 0.0, -1.0, 0.0,
+        1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0);
+    const cv::Mat translation_cam1_from_cam0 = (cv::Mat_<double>(3, 1) << -0.1, 0.2, 0.3);
+
+    const stereo_examples::StereoTransform transform =
+        stereo_examples::make_opencv_stereo_transform_from_kalibr(
+            rotation_cam1_from_cam0,
+            translation_cam1_from_cam0);
+
+    const cv::Mat expected_rotation = rotation_cam1_from_cam0.t();
+    const cv::Mat expected_translation = -expected_rotation * translation_cam1_from_cam0;
+
+    require(cv::norm(transform.rotation - expected_rotation) < 1e-12, "OpenCV stereo rotation should invert Kalibr transform");
+    require(cv::norm(transform.translation - expected_translation) < 1e-12, "OpenCV stereo translation should invert Kalibr transform");
+}
+
 void test_rejects_wrong_input_size()
 {
     const stereo_examples::StereoRectifier rectifier(write_test_calibration());
@@ -95,6 +114,7 @@ int main()
     try
     {
         test_loads_calibration();
+        test_converts_kalibr_transform_to_opencv_stereo_transform();
         test_rejects_wrong_input_size();
         test_rectifies_matching_input_size();
     }

@@ -12,6 +12,7 @@ namespace cl
 SGMDetails::SGMDetails(cl_context ctx, cl_device_id device)
     : m_cl_context(ctx)
     , m_cl_device_id(device)
+    , m_tuning(ocl_runtime_config::query_tuning(device))
 {
 }
 SGMDetails::~SGMDetails()
@@ -60,21 +61,25 @@ void SGMDetails::median_filter(const DeviceBuffer<uint16_t>& d_src,
     err = clSetKernelArg(m_kernel_median, 3, sizeof(height), &height);
     err = clSetKernelArg(m_kernel_median, 4, sizeof(pitch), &pitch);
     
-    static constexpr int SIZE = 16;
-    size_t local_size[2] = { SIZE, SIZE };
+    const int SIZE = static_cast<int>(m_tuning.postprocess_tile_size);
+    size_t local_size[2] = { static_cast<size_t>(SIZE), static_cast<size_t>(SIZE) };
     size_t global_size[2] = {
         ((width + SIZE - 1) / SIZE) * local_size[0],
         ((height + SIZE - 1) / SIZE) * local_size[1]
     };
 
+    cl_event event = nullptr;
+    const auto profile_start = global_ocl_profiler().kernel_start();
     err = clEnqueueNDRangeKernel(stream,
         m_kernel_median,
         2,
         nullptr,
         global_size,
         local_size,
-        0, nullptr, nullptr);
+        0, nullptr,
+        global_ocl_profiler().event_profiling_enabled() ? &event : nullptr);
     CHECK_OCL_ERROR(err, "Error enequeuing winner_takes_all kernel");
+    global_ocl_profiler().complete_kernel("median_filter", stream, event, profile_start);
 }
 
 template<typename input_type>
@@ -120,8 +125,8 @@ inline void SGMDetails::check_consistency(DeviceBuffer<uint16_t>& d_left_disp,
         m_kernel_check_consistency = m_program_check_consistency.getKernel("check_consistency_kernel");
     }
 
-    static constexpr int SIZE = 16;
-    size_t local_size[2] = { SIZE, SIZE };
+    const int SIZE = static_cast<int>(m_tuning.postprocess_tile_size);
+    size_t local_size[2] = { static_cast<size_t>(SIZE), static_cast<size_t>(SIZE) };
     size_t global_size[2] = {
         ((width + SIZE - 1) / SIZE) * local_size[0],
         ((height + SIZE - 1) / SIZE) * local_size[1]
@@ -141,14 +146,18 @@ inline void SGMDetails::check_consistency(DeviceBuffer<uint16_t>& d_left_disp,
     err = clSetKernelArg(m_kernel_check_consistency, 8, sizeof(LR_max_diff), &LR_max_diff);
 
 
+    cl_event event = nullptr;
+    const auto profile_start = global_ocl_profiler().kernel_start();
     err = clEnqueueNDRangeKernel(stream,
         m_kernel_check_consistency,
         2,
         nullptr,
         global_size,
         local_size,
-        0, nullptr, nullptr);
+        0, nullptr,
+        global_ocl_profiler().event_profiling_enabled() ? &event : nullptr);
     CHECK_OCL_ERROR(err, "Error enequeuing winner_takes_all kernel");
+    global_ocl_profiler().complete_kernel("check_consistency", stream, event, profile_start);
 }
 
 void SGMDetails::correct_disparity_range(DeviceBuffer<uint16_t>& d_disp,
@@ -183,21 +192,25 @@ void SGMDetails::correct_disparity_range(DeviceBuffer<uint16_t>& d_disp,
     err = clSetKernelArg(m_kernel_disp_corr, 4, sizeof(min_disp_scaled), &min_disp_scaled);
     err = clSetKernelArg(m_kernel_disp_corr, 5, sizeof(invalid_disp_scaled), &invalid_disp_scaled);
 
-    static constexpr int SIZE = 16;
-    size_t local_size[2] = { SIZE, SIZE };
+    const int SIZE = static_cast<int>(m_tuning.postprocess_tile_size);
+    size_t local_size[2] = { static_cast<size_t>(SIZE), static_cast<size_t>(SIZE) };
     size_t global_size[2] = {
         ((width + SIZE - 1) / SIZE) * local_size[0],
         ((height + SIZE - 1) / SIZE) * local_size[1]
     };
 
+    cl_event event = nullptr;
+    const auto profile_start = global_ocl_profiler().kernel_start();
     err = clEnqueueNDRangeKernel(stream,
         m_kernel_disp_corr,
         2,
         nullptr,
         global_size,
         local_size,
-        0, nullptr, nullptr);
+        0, nullptr,
+        global_ocl_profiler().event_profiling_enabled() ? &event : nullptr);
     CHECK_OCL_ERROR(err, "Error enequeuing correct disparity range kernel");
+    global_ocl_profiler().complete_kernel("correct_disparity_range", stream, event, profile_start);
 }
 
 void SGMDetails::cast_16bit_8bit_array(const DeviceBuffer<uint16_t>& arr16bits,
@@ -218,14 +231,18 @@ void SGMDetails::cast_16bit_8bit_array(const DeviceBuffer<uint16_t>& arr16bits,
     err = clSetKernelArg(m_kernel_cast_16uto8u, 1, sizeof(cl_mem), &arr8bits.data());
     err = clSetKernelArg(m_kernel_cast_16uto8u, 2, sizeof(num_elements), &num_elements);
 
+    cl_event event = nullptr;
+    const auto profile_start = global_ocl_profiler().kernel_start();
     err = clEnqueueNDRangeKernel(stream,
         m_kernel_cast_16uto8u,
         1,
         nullptr,
         global_size,
         local_size,
-        0, nullptr, nullptr);
+        0, nullptr,
+        global_ocl_profiler().event_profiling_enabled() ? &event : nullptr);
     CHECK_OCL_ERROR(err, "Error enequeuing cast_16bit_8bit_array kernel");
+    global_ocl_profiler().complete_kernel("cast_16bit_8bit_array", stream, event, profile_start);
 }
 
 void SGMDetails::initDispRangeCorrection()

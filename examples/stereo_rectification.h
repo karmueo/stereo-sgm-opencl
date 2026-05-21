@@ -8,6 +8,16 @@
 namespace stereo_examples
 {
 
+struct StereoTransform
+{
+    cv::Mat rotation;
+    cv::Mat translation;
+};
+
+StereoTransform make_opencv_stereo_transform_from_kalibr(
+    const cv::Mat& rotation_cam1_from_cam0,
+    const cv::Mat& translation_cam1_from_cam0);
+
 class StereoRectifier
 {
 public:

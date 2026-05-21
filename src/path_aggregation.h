@@ -18,6 +18,7 @@ limitations under the License.
 #include "device_buffer.hpp"
 #include "libsgm_ocl/types.h"
 #include "device_kernel.h"
+#include "ocl_profiler.h"
 #include <regex>
 #include <vector>
 #include <cmrc/cmrc.hpp>
@@ -38,6 +39,7 @@ struct VerticalPathAggregation
     VerticalPathAggregation(cl_context ctx, cl_device_id device)
         : m_cl_ctx(ctx)
         , m_cl_device(device)
+        , m_tuning(ocl_runtime_config::query_tuning(device))
     {
     }
     ~VerticalPathAggregation()
@@ -47,12 +49,20 @@ struct VerticalPathAggregation
             clReleaseKernel(m_kernel);
             m_kernel = nullptr;
         }
+        if (m_fast_kernel)
+        {
+            clReleaseKernel(m_fast_kernel);
+            m_fast_kernel = nullptr;
+        }
     }
 
     DeviceProgram m_program;
     cl_context m_cl_ctx = nullptr;
     cl_device_id m_cl_device = nullptr;
     cl_kernel m_kernel = nullptr;
+    DeviceProgram m_fast_program;
+    cl_kernel m_fast_kernel = nullptr;
+    OclTuning m_tuning;
     void enqueue(DeviceBuffer<cost_type> & dest,
         const DeviceBuffer<feature_type> & left,
         const DeviceBuffer<feature_type> & right,
@@ -61,38 +71,61 @@ struct VerticalPathAggregation
         unsigned int p1,
         unsigned int p2,
         int min_disp,
-        cl_command_queue stream)
+        cl_command_queue stream,
+        bool use_fast_path = false)
     {
-        if (!m_kernel)
+        const bool use_fast_kernel = use_fast_path
+            && m_tuning.use_mali_vertical_128
+            && MAX_DISPARITY == 128;
+        if (use_fast_kernel && !m_fast_kernel)
+            initFast();
+        if (!use_fast_kernel && !m_kernel)
             init();
+        cl_kernel kernel = use_fast_kernel ? m_fast_kernel : m_kernel;
 
         cl_int err;
-        err = clSetKernelArg(m_kernel, 0, sizeof(cl_mem), &dest.data());
-        err = clSetKernelArg(m_kernel, 1, sizeof(cl_mem), &left.data());
-        err = clSetKernelArg(m_kernel, 2, sizeof(cl_mem), &right.data());
-        err = clSetKernelArg(m_kernel, 3, sizeof(width), &width);
-        err = clSetKernelArg(m_kernel, 4, sizeof(height), &height);
-        err = clSetKernelArg(m_kernel, 5, sizeof(p1), &p1);
-        err = clSetKernelArg(m_kernel, 6, sizeof(p2), &p2);
-        err = clSetKernelArg(m_kernel, 7, sizeof(min_disp), &min_disp);
+        err = clSetKernelArg(kernel, 0, sizeof(cl_mem), &dest.data());
+        err = clSetKernelArg(kernel, 1, sizeof(cl_mem), &left.data());
+        err = clSetKernelArg(kernel, 2, sizeof(cl_mem), &right.data());
+        err = clSetKernelArg(kernel, 3, sizeof(width), &width);
+        err = clSetKernelArg(kernel, 4, sizeof(height), &height);
+        err = clSetKernelArg(kernel, 5, sizeof(p1), &p1);
+        err = clSetKernelArg(kernel, 6, sizeof(p2), &p2);
+        err = clSetKernelArg(kernel, 7, sizeof(min_disp), &min_disp);
 
         static const unsigned int SUBGROUP_SIZE = MAX_DISPARITY / DP_BLOCK_SIZE;
-        static const unsigned int PATHS_PER_BLOCK = BLOCK_SIZE / SUBGROUP_SIZE;
+        const unsigned int block_size = use_fast_kernel ? 8u : m_tuning.path_block_size;
+        const unsigned int PATHS_PER_BLOCK = block_size / SUBGROUP_SIZE;
 
-        //setup kernels
-        const size_t gdim = (width + PATHS_PER_BLOCK - 1) / PATHS_PER_BLOCK;
-        const size_t bdim = BLOCK_SIZE;
-        //
-        size_t global_size[1] = { gdim * bdim };
-        size_t local_size[1] = { bdim };
+        size_t global_size[1];
+        size_t local_size[1] = { block_size };
+        if (use_fast_kernel)
+        {
+            global_size[0] = ((static_cast<size_t>(width) + block_size - 1) / block_size) * block_size;
+        }
+        else
+        {
+            const size_t gdim = (width + PATHS_PER_BLOCK - 1) / PATHS_PER_BLOCK;
+            global_size[0] = gdim * block_size;
+        }
+        cl_event event = nullptr;
+        const auto profile_start = global_ocl_profiler().kernel_start();
         err = clEnqueueNDRangeKernel(stream,
-            m_kernel,
+            kernel,
             1,
             nullptr,
             global_size,
             local_size,
-            0, nullptr, nullptr);
+            0, nullptr,
+            global_ocl_profiler().event_profiling_enabled() ? &event : nullptr);
         CHECK_OCL_ERROR(err, "Error finishing queue");
+        global_ocl_profiler().complete_kernel(
+            use_fast_kernel
+                ? (DIRECTION > 0 ? "path_vertical_up2down_mali_128" : "path_vertical_down2up_mali_128")
+                : (DIRECTION > 0 ? "path_vertical_up2down" : "path_vertical_down2up"),
+            stream,
+            event,
+            profile_start);
 //        clFinish(stream);
 //        cv::Mat debug(height, width, CV_8UC4);
 //        clEnqueueReadBuffer(stream, dest.data(), true, 0, width * height * 4, debug.data, 0, nullptr, nullptr);
@@ -101,6 +134,7 @@ struct VerticalPathAggregation
     }
 
     void init();
+    void initFast();
 
 };
 
@@ -118,6 +152,7 @@ struct HorizontalPathAggregation
     HorizontalPathAggregation(cl_context ctx, cl_device_id device)
         : m_cl_ctx(ctx)
         , m_cl_device(device)
+        , m_tuning(ocl_runtime_config::query_tuning(device))
     {
     }
     ~HorizontalPathAggregation()
@@ -132,6 +167,7 @@ struct HorizontalPathAggregation
     cl_context m_cl_ctx = nullptr;
     cl_device_id m_cl_device = nullptr;
     cl_kernel m_kernel = nullptr;
+    OclTuning m_tuning;
     void enqueue(DeviceBuffer<cost_type>& dest,
         const DeviceBuffer<feature_type>& left,
         const DeviceBuffer<feature_type>& right,
@@ -156,22 +192,31 @@ struct HorizontalPathAggregation
         err = clSetKernelArg(m_kernel, 7, sizeof(min_disp), &min_disp);
 
         static const unsigned int SUBGROUP_SIZE = MAX_DISPARITY / DP_BLOCK_SIZE;
-        static const unsigned int PATHS_PER_BLOCK =
-            BLOCK_SIZE * DP_BLOCKS_PER_THREAD / SUBGROUP_SIZE;
+        const unsigned int block_size = m_tuning.path_block_size;
+        const unsigned int PATHS_PER_BLOCK =
+            block_size * DP_BLOCKS_PER_THREAD / SUBGROUP_SIZE;
 
         //setup kernels
         const size_t gdim = (height + PATHS_PER_BLOCK - 1) / PATHS_PER_BLOCK;
-        const size_t bdim = BLOCK_SIZE;
+        const size_t bdim = block_size;
         //
         size_t global_size[1] = { gdim * bdim };
         size_t local_size[1] = { bdim };
+        cl_event event = nullptr;
+        const auto profile_start = global_ocl_profiler().kernel_start();
         err = clEnqueueNDRangeKernel(stream,
             m_kernel,
             1,
             nullptr,
             global_size,
             local_size,
-            0, nullptr, nullptr);
+            0, nullptr,
+            global_ocl_profiler().event_profiling_enabled() ? &event : nullptr);
+        global_ocl_profiler().complete_kernel(
+            DIRECTION > 0 ? "path_horizontal_left2right" : "path_horizontal_right2left",
+            stream,
+            event,
+            profile_start);
         //cl_int errr = clFinish(stream);
         //CHECK_OCL_ERROR(err, "Error finishing queue");
         //cv::Mat debug(height, width, CV_8UC4);
@@ -195,6 +240,7 @@ struct ObliquePathAggregation
     ObliquePathAggregation(cl_context ctx, cl_device_id device)
         : m_cl_ctx(ctx)
         , m_cl_device(device)
+        , m_tuning(ocl_runtime_config::query_tuning(device))
     {
     }
     ~ObliquePathAggregation()
@@ -209,6 +255,7 @@ struct ObliquePathAggregation
     cl_context m_cl_ctx = nullptr;
     cl_device_id m_cl_device = nullptr;
     cl_kernel m_kernel = nullptr;
+    OclTuning m_tuning;
     void enqueue(DeviceBuffer<cost_type>& dest,
         const DeviceBuffer<feature_type>& left,
         const DeviceBuffer<feature_type>& right,
@@ -233,20 +280,25 @@ struct ObliquePathAggregation
         err = clSetKernelArg(m_kernel, 7, sizeof(min_disp), &min_disp);
 
          const unsigned int SUBGROUP_SIZE = MAX_DISPARITY / DP_BLOCK_SIZE;
-         const unsigned int PATHS_PER_BLOCK = BLOCK_SIZE / SUBGROUP_SIZE;
+         const unsigned int block_size = m_tuning.path_block_size;
+         const unsigned int PATHS_PER_BLOCK = block_size / SUBGROUP_SIZE;
 
         const unsigned gdim = (width + height + PATHS_PER_BLOCK - 2) / PATHS_PER_BLOCK;
-        const unsigned bdim = BLOCK_SIZE;
+        const unsigned bdim = block_size;
         //
         size_t global_size[1] = { gdim * bdim };
         size_t local_size[1] = { bdim };
+        cl_event event = nullptr;
+        const auto profile_start = global_ocl_profiler().kernel_start();
         err = clEnqueueNDRangeKernel(stream,
             m_kernel,
             1,
             nullptr,
             global_size,
             local_size,
-            0, nullptr, nullptr);
+            0, nullptr,
+            global_ocl_profiler().event_profiling_enabled() ? &event : nullptr);
+        global_ocl_profiler().complete_kernel("path_oblique", stream, event, profile_start);
         //cl_int errr = clFinish(stream);
         //CHECK_OCL_ERROR(err, "Error finishing queue");
         //cv::Mat debug(height, width, CV_8UC4);

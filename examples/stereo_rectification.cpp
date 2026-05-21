@@ -265,10 +265,35 @@ void require_matching_size(const cv::Mat& image, const cv::Size& expected, const
 namespace stereo_examples
 {
 
+StereoTransform make_opencv_stereo_transform_from_kalibr(
+    const cv::Mat& rotation_cam1_from_cam0,
+    const cv::Mat& translation_cam1_from_cam0)
+{
+    if (rotation_cam1_from_cam0.size() != cv::Size(3, 3)
+        || translation_cam1_from_cam0.rows != 3
+        || translation_cam1_from_cam0.cols != 1)
+    {
+        throw std::runtime_error("Kalibr stereo transform must contain a 3x3 rotation and 3x1 translation");
+    }
+
+    cv::Mat rotation;
+    cv::Mat translation;
+    rotation_cam1_from_cam0.convertTo(rotation, CV_64F);
+    translation_cam1_from_cam0.convertTo(translation, CV_64F);
+
+    StereoTransform result;
+    result.rotation = rotation.t();
+    result.translation = -result.rotation * translation;
+    return result;
+}
+
 StereoRectifier::StereoRectifier(const std::string& calibration_path)
 {
     const StereoCalibration calibration = load_kalibr_calibration(calibration_path);
     m_image_size = calibration.cam0.resolution;
+    const StereoTransform stereo_transform = make_opencv_stereo_transform_from_kalibr(
+        calibration.rotation,
+        calibration.translation);
 
     cv::Mat left_rotation;
     cv::Mat right_rotation;
@@ -281,8 +306,8 @@ StereoRectifier::StereoRectifier(const std::string& calibration_path)
         calibration.cam1.camera_matrix,
         calibration.cam1.distortion,
         m_image_size,
-        calibration.rotation,
-        calibration.translation,
+        stereo_transform.rotation,
+        stereo_transform.translation,
         left_rotation,
         right_rotation,
         left_projection,

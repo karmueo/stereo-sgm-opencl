@@ -20,6 +20,7 @@ limitations under the License.
 #include "libsgm_ocl/types.h"
 #include "device_buffer.hpp"
 #include "device_kernel.h"
+#include "ocl_profiler.h"
 
 namespace sgm
 {
@@ -77,6 +78,7 @@ private:
     DeviceProgram m_program_disp_corr;
     cl_kernel m_kernel_disp_corr = nullptr;
     cl_kernel m_kernel_cast_16uto8u = nullptr;
+    OclTuning m_tuning;
 
 private:
     static constexpr unsigned int WARP_SIZE = 32;

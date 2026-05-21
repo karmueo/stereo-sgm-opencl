@@ -62,6 +62,8 @@ cmake .. -DBUILD_EXAMPLES=ON -DCL_TARGET_OPENCL_VERSION=120 -DCMAKE_BUILD_TYPE=R
                 OpenCL plarform index
         --sp, --subpixel (value:false)
                 Compute subpixel accuracy
+        --profile (value:false)
+                Print OpenCL kernel profiling
 
         img_source_left (value:)
                 Left images
@@ -79,8 +81,44 @@ On Windows:
 On Linux:
 
 ```
-./stereo_movie [path to kitti]/sequences/00/image_0/%06d.png [path to kitti]/00/image_1/%06d.png 
+./stereo_movie [path to kitti]/sequences/00/image_0/%06d.png [path to kitti]/00/image_1/%06d.png
 ```
+
+## RK3576 / Mali-G52 realtime mode
+
+Rusticl/Panfrost must expose the Mali device before running the examples:
+
+```
+RUSTICL_ENABLE=panfrost clinfo
+```
+
+For realtime use on RK3576, prefer 4 paths, `max_disparity=128`, and subpixel disabled:
+
+```
+RUSTICL_ENABLE=panfrost ./build/stereo_movie left/%06d.png right/%06d.png \
+  --max_disparity=128 --num_path=4 --subpixel=false
+```
+
+Use `--profile` to print per-kernel timing. On Panfrost, if event timestamp queues are unavailable, profiling falls back to host wall-clock timing and serializes kernels for diagnosis:
+
+```
+RUSTICL_ENABLE=panfrost ./build/stereo_batch \
+  --input_dir=data \
+  --output_dir=output/rectified_batch \
+  --calib=stereo-camchain.yaml \
+  --max_disparity=128 \
+  --num_path=4 \
+  --subpixel=false \
+  --profile
+```
+
+Experimental Mali rewrite kernels for vertical aggregation and WTA are available for comparison:
+
+```
+RUSTICL_ENABLE=panfrost LIBSGM_OCL_ENABLE_MALI_REWRITE=1 ./build/stereo_batch ...
+```
+
+They are disabled by default because current RK3576 measurements show the existing kernels are faster on warm frames.
 
 ## Known issues
  - oblique path optimizations are not working correctly, there is some magic error. 4 path optimization gives better result now, 2 x faster and uses ~ half memory of 8 path optimization

@@ -2,6 +2,7 @@
 #include "libsgm_ocl/types.h"
 #include "device_buffer.hpp"
 #include "device_kernel.h"
+#include "ocl_profiler.h"
 #include <regex>
 #include <cmrc/cmrc.hpp>
 CMRC_DECLARE(ocl_sgm);
@@ -38,6 +39,7 @@ private:
     cl_context m_cl_ctx = nullptr;
     cl_device_id m_cl_device = nullptr;
     cl_kernel m_census_kernel = nullptr;
+    OclTuning m_tuning;
 };
 
 
@@ -46,6 +48,7 @@ inline CensusTransform<input_type>::CensusTransform(cl_context ctx,
     cl_device_id device)
     : m_cl_ctx(ctx)
     , m_cl_device(device)
+    , m_tuning(ocl_runtime_config::query_tuning(device))
 {
 }
 
@@ -90,6 +93,9 @@ inline void CensusTransform<input_type>::enqueue(const DeviceBuffer<input_type> 
         auto kernel = std::string(kernel_rc.begin(), kernel_rc.end());
         std::regex px_type_regex("@pixel_type@");
         kernel = std::regex_replace(kernel, px_type_regex, kernel_template_types);
+        const std::string block_size_define =
+            "#define BLOCK_SIZE_CENSUS " + std::to_string(m_tuning.census_block_size) + "\n";
+        kernel = std::regex_replace(kernel, std::regex("@BLOCK_SIZE_CENSUS@"), block_size_define);
         m_program.init(m_cl_ctx, m_cl_device, kernel);
 
         m_census_kernel = m_program.getKernel("census_transform_kernel");
@@ -104,23 +110,28 @@ inline void CensusTransform<input_type>::enqueue(const DeviceBuffer<input_type> 
     err = clSetKernelArg(m_census_kernel, 3, sizeof(height), &height);
     err = clSetKernelArg(m_census_kernel, 4, sizeof(pitch), &pitch);
 
-    const int width_per_block = BLOCK_SIZE - WINDOW_WIDTH + 1;
+    const int block_size = static_cast<int>(m_tuning.census_block_size);
+    const int width_per_block = block_size - WINDOW_WIDTH + 1;
     const int height_per_block = LINES_PER_BLOCK;
 
     //setup kernels
     size_t global_size[2] = {
-        (size_t)((width + width_per_block - 1) / width_per_block * BLOCK_SIZE),
+        (size_t)((width + width_per_block - 1) / width_per_block * block_size),
         (size_t)((height + height_per_block - 1) / height_per_block)
     };
-    size_t local_size[2] = { BLOCK_SIZE, 1 };
+    size_t local_size[2] = { static_cast<size_t>(block_size), 1 };
+    cl_event event = nullptr;
+    const auto profile_start = global_ocl_profiler().kernel_start();
     err = clEnqueueNDRangeKernel(stream,
         m_census_kernel,
         2,
         nullptr,
         global_size,
         local_size,
-        0, nullptr, nullptr);
+        0, nullptr,
+        global_ocl_profiler().event_profiling_enabled() ? &event : nullptr);
     CHECK_OCL_ERROR(err, "Error enequeuing census kernel");
+    global_ocl_profiler().complete_kernel("census_transform", stream, event, profile_start);
 }
 
 }

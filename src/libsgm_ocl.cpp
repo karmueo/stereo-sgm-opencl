@@ -6,6 +6,7 @@
 #include "sgm.hpp"
 #include "device_buffer.hpp"
 #include "sgm_details.h"
+#include "ocl_profiler.h"
 #include <memory>
 
 namespace sgm
@@ -295,6 +296,11 @@ void StereoSGM<input_type>::execute(const input_type* left_pixels,
 template<typename input_type>
 void StereoSGM<input_type>::execute(cl_mem left_pixels, cl_mem right_pixels, cl_mem dst)
 {
+    if (global_ocl_profiler().enabled())
+    {
+        global_ocl_profiler().clear();
+    }
+
     DeviceBuffer<input_type> left_img(m_cl_ctx,
         m_src_pitch * m_height * sizeof(input_type),
         left_pixels);
@@ -365,6 +371,15 @@ void StereoSGM<input_type>::execute(cl_mem left_pixels, cl_mem right_pixels, cl_
             m_cl_cmd_queue);
     }
     clFinish(m_cl_cmd_queue);
+    if (global_ocl_profiler().enabled())
+    {
+        global_ocl_profiler().collect_pending();
+        const std::string profile_report = global_ocl_profiler().format_report();
+        if (!profile_report.empty())
+        {
+            std::cout << profile_report;
+        }
+    }
 }
 
 template<typename input_type>
@@ -377,7 +392,7 @@ template <typename input_type>
 void StereoSGM<input_type>::initCL()
 {
     cl_int err;
-    m_cl_cmd_queue = clCreateCommandQueue(m_cl_ctx, m_cl_device, 0, &err);
+    m_cl_cmd_queue = create_ocl_command_queue(m_cl_ctx, m_cl_device, &err);
     CHECK_OCL_ERROR(err, "Failed to create command queue");
 }
 

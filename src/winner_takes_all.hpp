@@ -20,6 +20,7 @@ limitations under the License.
 #include "libsgm_ocl/types.h"
 #include "device_buffer.hpp"
 #include "device_kernel.h"
+#include "ocl_profiler.h"
 
 namespace sgm
 {
@@ -31,6 +32,7 @@ class WinnerTakesAll
 {
 public:
     WinnerTakesAll(cl_context ctx, cl_device_id device);
+    ~WinnerTakesAll();
 
     const DeviceBuffer<uint16_t>& get_left_output() const
     {
@@ -71,6 +73,19 @@ private:
 
     DeviceProgram m_program;
     cl_kernel m_kernel = nullptr;
+    DeviceProgram m_fast_program;
+    cl_kernel m_fast_left_kernel = nullptr;
+    cl_kernel m_fast_right_kernel = nullptr;
+    OclTuning m_tuning;
+    void initFast(PathType path_type);
+    void enqueueFast(DeviceBuffer<uint16_t>& left,
+        DeviceBuffer<uint16_t>& right,
+        const DeviceBuffer<uint8_t>& src,
+        int width,
+        int height,
+        int pitch,
+        float uniqueness,
+        cl_command_queue stream);
 private:
     static constexpr unsigned int WARP_SIZE = 32;
     static constexpr unsigned int WARPS_PER_BLOCK = 8u;

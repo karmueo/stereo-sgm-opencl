@@ -39,6 +39,9 @@ limitations under the License.
 #include <opencv2/imgproc/imgproc.hpp>
 
 #include "stereo_rectification.h"
+#include "stereo_batch_output.h"
+#include "stereo_batch_preprocess.h"
+#include "ocl_profiler.h"
 
 namespace
 {
@@ -222,7 +225,8 @@ cv::Mat crop_to_multiple_of_4(const cv::Mat& image)
 
 std::vector<LoadedPair> load_pairs(
     const std::vector<StereoPair>& pairs,
-    const stereo_examples::StereoRectifier* rectifier)
+    const stereo_examples::StereoRectifier* rectifier,
+    double scale)
 {
     std::vector<LoadedPair> loaded;
     loaded.reserve(pairs.size());
@@ -248,6 +252,9 @@ std::vector<LoadedPair> load_pairs(
             left = rectified_left;
             right = rectified_right;
         }
+
+        left = stereo_examples::scale_image_for_sgm(left, scale);
+        right = stereo_examples::scale_image_for_sgm(right, scale);
 
         left = crop_to_multiple_of_4(left);
         right = crop_to_multiple_of_4(right);
@@ -390,12 +397,14 @@ int main(int argc, char* argv[])
         "{ left_prefix | left_ | Left image filename prefix }"
         "{ right_prefix | right_ | Right image filename prefix }"
         "{ md max_disparity | 128 | Maximum disparity, one of 64, 128, 256 }"
-        "{ sp subpixel | true | Compute subpixel accuracy }"
+        "{ sp subpixel | false | Compute subpixel accuracy }"
         "{ platform_idx | 0 | OpenCL platform index }"
         "{ device_idx | 0 | OpenCL GPU device index }"
         "{ np num_path | 4 | Num path to optimize, 4 or 8 }"
         "{ calib | stereo-camchain.yaml | Stereo calibration YAML path }"
-        "{ no_rectify | false | Disable stereo rectification }";
+        "{ no_rectify | false | Disable stereo rectification }"
+        "{ scale | 1.0 | Image scale factor before SGM computation, > 0 and <= 1 }"
+        "{ profile | false | Print OpenCL kernel profiling }";
 
     cv::CommandLineParser parser(argc, argv, keys);
     if (parser.has("help"))
@@ -412,6 +421,16 @@ int main(int argc, char* argv[])
         const std::string right_prefix = parser.get<std::string>("right_prefix");
         const int disp_size = parser.get<int>("max_disparity");
         const int num_path = parser.get<int>("num_path");
+        const double scale = parser.get<double>("scale");
+        const bool profile_enabled = parser.get<bool>("profile");
+        if (profile_enabled)
+        {
+#ifdef _WIN32
+            _putenv_s("LIBSGM_OCL_PROFILE", "1");
+#else
+            setenv("LIBSGM_OCL_PROFILE", "1", 1);
+#endif
+        }
 
         if (output_dir.empty())
         {
@@ -425,6 +444,7 @@ int main(int argc, char* argv[])
         {
             throw std::runtime_error("num_path must be 4 or 8");
         }
+        stereo_examples::validate_sgm_scale(scale);
 
         const std::vector<StereoPair> pairs = find_stereo_pairs(input_dir, left_prefix, right_prefix);
         if (pairs.empty())
@@ -438,7 +458,7 @@ int main(int argc, char* argv[])
         {
             rectifier.reset(new stereo_examples::StereoRectifier(parser.get<std::string>("calib")));
         }
-        std::vector<LoadedPair> loaded = load_pairs(pairs, rectifier.get());
+        std::vector<LoadedPair> loaded = load_pairs(pairs, rectifier.get(), scale);
         create_directories(output_dir);
 
         const cv::Size img_size = loaded.front().left.size();
@@ -457,7 +477,7 @@ int main(int argc, char* argv[])
 
         ClContext cl = init_cl_context(parser.get<int>("platform_idx"), parser.get<int>("device_idx"));
         cl_int err = CL_SUCCESS;
-        cl_command_queue queue = clCreateCommandQueue(cl.context, cl.device, 0, &err);
+        cl_command_queue queue = sgm::cl::create_ocl_command_queue(cl.context, cl.device, &err);
         check_cl(err, "clCreateCommandQueue");
 
         sgm::cl::Parameters params;
@@ -490,6 +510,7 @@ int main(int argc, char* argv[])
         int processed = 0;
         std::cout << "Processing size: " << img_size.width << "x" << img_size.height
                   << ", output_depth=" << output_depth
+                  << ", scale=" << scale
                   << ", pairs=" << loaded.size() << std::endl;
 
         for (const auto& item : loaded)
@@ -516,14 +537,11 @@ int main(int argc, char* argv[])
             ssgm.execute(d_left, d_right, d_disp);
             check_cl(clEnqueueReadBuffer(queue, d_disp, CL_TRUE, 0, disp_bytes, disp.data, 0, nullptr, nullptr),
                 "clEnqueueReadBuffer(disparity)");
-            if (disp.type() == CV_16UC1)
-            {
-                disp_to_save = disp;
-            }
-            else
-            {
-                disp.convertTo(disp_to_save, CV_16UC1);
-            }
+            disp_to_save = stereo_examples::prepare_disparity_for_png(
+                disp,
+                disp_size,
+                params.subpixel,
+                ssgm.get_invalid_disparity());
             const auto processing_end = std::chrono::steady_clock::now();
 
             const double frame_ms = std::chrono::duration<double, std::milli>(processing_end - processing_start).count();

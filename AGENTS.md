@@ -1,52 +1,82 @@
-# Repository Guidelines
+# 仓库指南
 
-## Project Structure & Module Organization
+## 项目结构与模块组织
 
-This repository builds `libsgm_ocl`, a C++14 static library for semi-global stereo matching using OpenCL.
+本仓库构建 `libsgm_ocl`，这是一个使用 OpenCL 实现半全局立体匹配的 C++14 静态库。
 
-- `libsgm_ocl/` contains the public API headers (`libsgm_ocl.h`, `types.h`).
-- `src/` contains C++ implementation files and internal headers.
-- `src/ocl/` contains OpenCL kernel sources embedded into the library through `CMakeRC.cmake`.
-- `examples/` contains the `stereo_movie` OpenCV/OpenCL example.
-- `cmake/` contains package config templates used during install.
+- `libsgm_ocl/` 包含公共 API 头文件（`libsgm_ocl.h`、`types.h`）。
+- `src/` 包含 C++ 实现文件和内部头文件。
+- `src/ocl/` 包含 OpenCL kernel 源文件，这些文件会通过 `CMakeRC.cmake` 嵌入到库中。
+- `examples/` 包含 `stereo_movie` OpenCV/OpenCL 示例。
+- `cmake/` 包含安装时使用的包配置模板。
 
-There is currently no dedicated `tests/` directory.
+目前没有专门的 `tests/` 目录。
 
-## Build, Test, and Development Commands
+## 构建、测试与开发命令
 
-Use an out-of-tree build directory; `build/` and `b/` are ignored.
+使用源码树外的构建目录；`build/` 和 `b/` 已被忽略。
 
 ```sh
 cmake -S . -B build -DBUILD_EXAMPLES=ON -DCL_TARGET_OPENCL_VERSION=120 -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
-The first command configures the library and optional example. The second compiles `libsgm_ocl` and, when enabled, `stereo_movie`.
+第一条命令配置库和可选示例。第二条命令编译 `libsgm_ocl`，并在启用示例时编译 `stereo_movie`。
 
 ```sh
 cmake --install build --prefix /tmp/libsgm_ocl-install
 ```
 
-Use this to verify install rules and generated CMake package files.
+使用该命令验证安装规则以及生成的 CMake 包文件。
 
-Run the example with rectified stereo image streams:
+在 RK3576 / Mali-G52（Panfrost）设备上运行 OpenCL 示例时，需要启用 Rusticl 的 Panfrost 设备：
+
+```sh
+RUSTICL_ENABLE=panfrost clinfo
+```
+
+确认输出中能看到 `Mali-G52 r1 (Panfrost)` GPU。未设置该环境变量时，`clinfo` 可能只显示 `rusticl` 平台但设备数为 0，示例会报 `no GPU OpenCL devices found on platform 0`。通过 VS Code CMake 插件运行时，也需要在 `.vscode/settings.json` 的调试环境中保留：
+
+```json
+"environment": [
+    {
+        "name": "RUSTICL_ENABLE",
+        "value": "panfrost"
+    }
+]
+```
+
+使用已校正的双目图像流运行示例：
 
 ```sh
 ./build/stereo_movie left/%06d.png right/%06d.png --max_disparity=128 --num_path=4
 ```
 
-## Coding Style & Naming Conventions
+使用 `data/` 下的原始左右图和 `stereo-camchain.yaml` 校正后批量生成视差图：
 
-Follow the existing C++ style: C++14, four-space indentation, braces on their own line for namespaces/classes/functions, and snake_case for functions, variables, and file names. Class and struct names use `PascalCase`; template parameters and constants follow local usage. Keep public API changes in `libsgm_ocl/` minimal and document behavior in header comments.
+```sh
+RUSTICL_ENABLE=panfrost ./build/stereo_batch \
+  --input_dir=data \
+  --output_dir=output/rectified_batch \
+  --calib=stereo-camchain.yaml \
+  --max_disparity=128 \
+  --num_path=4
+```
 
-For OpenCL kernels, keep files in `src/ocl/`, use `.cl`, and add new kernels to the `OCL_FILES` list in `CMakeLists.txt` so they are embedded.
+## 编码风格与命名约定
 
-## Testing Guidelines
+遵循现有 C++ 风格：C++14、四空格缩进，命名空间、类和函数的大括号单独占一行，函数、变量和文件名使用 snake_case。类名和结构体名使用 `PascalCase`；模板参数和常量遵循局部既有用法。尽量减少 `libsgm_ocl/` 中的公共 API 变更，并在头文件注释中记录行为。
 
-No automated test framework is configured. At minimum, validate changes by configuring and building with `BUILD_EXAMPLES=ON`. For algorithm or kernel changes, run `stereo_movie` on a small rectified stereo pair and compare output visually or against a known result. Prefer adding focused tests if a future test framework is introduced.
+OpenCL kernel 文件应放在 `src/ocl/` 中，使用 `.cl` 后缀，并将新增 kernel 添加到 `CMakeLists.txt` 的 `OCL_FILES` 列表中，以便嵌入到库里。
 
-## Commit & Pull Request Guidelines
+## 测试指南
 
-The existing history uses short, direct commit subjects such as `input padding to 4` and `fix bugs`. Keep commits concise and action-oriented, and reference issues when relevant (`fix #6 ...`).
+当前未配置自动化测试框架。最低限度应使用 `BUILD_EXAMPLES=ON` 进行配置和构建来验证变更。对于算法或 kernel 变更，应在一组小型已校正双目图像上运行 `stereo_movie`，并通过目视检查或与已知结果对比来验证输出。如果将来引入测试框架，优先添加聚焦的测试。
 
-Pull requests should include a short summary, build/test commands run, affected platforms or devices, and notes for OpenCL/OpenCV dependency changes. Include screenshots or sample disparity output when changing algorithm behavior or example rendering.
+## 提交与 Pull Request 指南
+
+现有历史使用简短直接的提交标题，例如 `input padding to 4` 和 `fix bugs`。保持提交简洁、面向动作，并在相关时引用 issue（如 `fix #6 ...`）。
+
+Pull request 应包含简短摘要、已运行的构建/测试命令、受影响的平台或设备，以及 OpenCL/OpenCV 依赖变更说明。修改算法行为或示例渲染时，请包含截图或示例视差输出。
+
+## 在动手修改代码之前，或执行复杂任务之前，先问我问题，确认后再开始

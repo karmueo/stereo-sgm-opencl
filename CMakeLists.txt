@@ -20,9 +20,11 @@ set(OCL_FILES
     src/ocl/census.cl
     src/ocl/path_aggregation_common.cl
     src/ocl/path_aggregation_vertical.cl
+    src/ocl/path_aggregation_vertical_mali_128.cl
     src/ocl/path_aggregation_horizontal.cl
     src/ocl/path_aggregation_oblique.cl
     src/ocl/winner_takes_all.cl
+    src/ocl/winner_takes_all_mali_128.cl
     src/ocl/check_consistency.cl
     src/ocl/median_filter.cl
     src/ocl/correct_disparity_range.cl
@@ -41,6 +43,8 @@ set(LIBSGM_SRCS
     src/sgm.cpp
     src/device_buffer.hpp
     src/device_kernel.h
+    src/ocl_profiler.h
+    src/ocl_runtime_config.h
     src/winner_takes_all.hpp
     src/winner_takes_all.cpp
     src/sgm_details.h
@@ -101,10 +105,10 @@ install(FILES ${LIBSGM_PUBLIC_HDRS} DESTINATION include/libsgm_ocl/libsgm_ocl)
 if (BUILD_EXAMPLES)
     find_package(OpenCV REQUIRED CONFIG)
     add_executable(stereo_movie examples/stereo_movie.cpp examples/stereo_rectification.cpp)
-    target_include_directories(stereo_movie PRIVATE examples)
+    target_include_directories(stereo_movie PRIVATE examples src)
     target_link_libraries(stereo_movie PRIVATE libsgm_ocl::libsgm_ocl ${OpenCV_LIBRARIES})
     add_executable(stereo_batch examples/stereo_batch.cpp examples/stereo_rectification.cpp)
-    target_include_directories(stereo_batch PRIVATE examples)
+    target_include_directories(stereo_batch PRIVATE examples src)
     target_link_libraries(stereo_batch PRIVATE libsgm_ocl::libsgm_ocl ${OpenCV_LIBRARIES})
 endif()
 
@@ -116,4 +120,34 @@ if (BUILD_TESTING)
     target_include_directories(test_stereo_rectification PRIVATE examples)
     target_link_libraries(test_stereo_rectification PRIVATE ${OpenCV_LIBRARIES})
     add_test(NAME test_stereo_rectification COMMAND test_stereo_rectification)
+
+    add_executable(test_stereo_batch_output
+        tests/test_stereo_batch_output.cpp
+    )
+    target_include_directories(test_stereo_batch_output PRIVATE examples)
+    target_link_libraries(test_stereo_batch_output PRIVATE ${OpenCV_LIBRARIES})
+    add_test(NAME test_stereo_batch_output COMMAND test_stereo_batch_output)
+
+    add_executable(test_stereo_batch_preprocess
+        tests/test_stereo_batch_preprocess.cpp
+    )
+    target_include_directories(test_stereo_batch_preprocess PRIVATE examples)
+    target_link_libraries(test_stereo_batch_preprocess PRIVATE ${OpenCV_LIBRARIES})
+    add_test(NAME test_stereo_batch_preprocess COMMAND test_stereo_batch_preprocess)
+
+    add_executable(test_ocl_runtime_config
+        tests/test_ocl_runtime_config.cpp
+    )
+    target_compile_definitions(test_ocl_runtime_config PRIVATE -DCL_TARGET_OPENCL_VERSION=${CL_TARGET_OPENCL_VERSION})
+    target_include_directories(test_ocl_runtime_config PRIVATE src ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(test_ocl_runtime_config PRIVATE OpenCL::OpenCL)
+    add_test(NAME test_ocl_runtime_config COMMAND test_ocl_runtime_config)
+
+    add_executable(test_ocl_profiler
+        tests/test_ocl_profiler.cpp
+    )
+    target_compile_definitions(test_ocl_profiler PRIVATE -DCL_TARGET_OPENCL_VERSION=${CL_TARGET_OPENCL_VERSION})
+    target_include_directories(test_ocl_profiler PRIVATE src ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(test_ocl_profiler PRIVATE OpenCL::OpenCL)
+    add_test(NAME test_ocl_profiler COMMAND test_ocl_profiler)
 endif()

@@ -18,7 +18,7 @@
 // census transfrom defines
 #define WINDOW_WIDTH  9
 #define WINDOW_HEIGHT  7
-#define BLOCK_SIZE_CENSUS 128
+@BLOCK_SIZE_CENSUS@
 #define LINES_PER_BLOCK 16
 #define SMEM_BUFFER_SIZE (WINDOW_HEIGHT + 1)
 

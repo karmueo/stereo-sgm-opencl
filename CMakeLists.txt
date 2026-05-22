@@ -43,6 +43,7 @@ set(LIBSGM_SRCS
     src/sgm.cpp
     src/device_buffer.hpp
     src/device_kernel.h
+    src/invalid_disparity_debug.h
     src/ocl_profiler.h
     src/ocl_runtime_config.h
     src/winner_takes_all.hpp
@@ -142,6 +143,13 @@ if (BUILD_TESTING)
     target_include_directories(test_ocl_runtime_config PRIVATE src ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(test_ocl_runtime_config PRIVATE OpenCL::OpenCL)
     add_test(NAME test_ocl_runtime_config COMMAND test_ocl_runtime_config)
+
+    add_executable(test_invalid_disparity_debug
+        tests/test_invalid_disparity_debug.cpp
+    )
+    target_compile_definitions(test_invalid_disparity_debug PRIVATE -DCL_TARGET_OPENCL_VERSION=${CL_TARGET_OPENCL_VERSION})
+    target_include_directories(test_invalid_disparity_debug PRIVATE src ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME test_invalid_disparity_debug COMMAND test_invalid_disparity_debug)
 
     add_executable(test_ocl_profiler
         tests/test_ocl_profiler.cpp

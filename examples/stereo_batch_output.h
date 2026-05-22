@@ -40,6 +40,25 @@ inline cv::Mat prepare_disparity_for_png(
     return disparity_color;
 }
 
+inline cv::Mat prepare_raw_disparity_for_png(const cv::Mat& disparity)
+{
+    if (disparity.type() != CV_8UC1 && disparity.type() != CV_16UC1)
+    {
+        throw std::runtime_error("raw disparity image must be CV_8UC1 or CV_16UC1");
+    }
+
+    cv::Mat raw_disparity;
+    if (disparity.type() == CV_8UC1)
+    {
+        disparity.convertTo(raw_disparity, CV_16U);
+    }
+    else
+    {
+        raw_disparity = disparity.clone();
+    }
+    return raw_disparity;
+}
+
 } // namespace stereo_examples
 
 #endif

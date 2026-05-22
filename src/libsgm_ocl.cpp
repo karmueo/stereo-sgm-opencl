@@ -5,6 +5,7 @@
 #include <iostream>
 #include "sgm.hpp"
 #include "device_buffer.hpp"
+#include "invalid_disparity_debug.h"
 #include "sgm_details.h"
 #include "ocl_profiler.h"
 #include <memory>
@@ -329,6 +330,27 @@ void StereoSGM<input_type>::execute(cl_mem left_pixels, cl_mem right_pixels, cl_
         m_params,
         m_cl_cmd_queue);
 
+    const bool debug_invalid = debug::invalid_debug_enabled();
+    const std::size_t disp_elements = static_cast<std::size_t>(m_dst_pitch) * m_height;
+    const std::size_t src_elements = static_cast<std::size_t>(m_src_pitch) * m_height;
+    std::vector<uint16_t> debug_wta_left;
+    std::vector<uint16_t> debug_median_left;
+    std::vector<uint16_t> debug_median_right;
+    std::vector<uint16_t> debug_checked_left;
+    std::vector<input_type> debug_left_pixels;
+    if (debug_invalid)
+    {
+        debug_wta_left.resize(disp_elements);
+        cl_int read_err = clEnqueueReadBuffer(m_cl_cmd_queue,
+            m_cu_res->d_tmp_left_disp.data(),
+            CL_TRUE,
+            0,
+            disp_elements * sizeof(uint16_t),
+            debug_wta_left.data(),
+            0, nullptr, nullptr);
+        CHECK_OCL_ERROR(read_err, "Reading WTA left disparity for invalid debug");
+    }
+
     m_cu_res->sgm_details.median_filter(m_cu_res->d_tmp_left_disp,
         *left_disparity,
         m_width,
@@ -343,6 +365,36 @@ void StereoSGM<input_type>::execute(cl_mem left_pixels, cl_mem right_pixels, cl_
         m_dst_pitch,
         m_cl_cmd_queue
     );
+    if (debug_invalid)
+    {
+        debug_median_left.resize(disp_elements);
+        debug_median_right.resize(disp_elements);
+        debug_left_pixels.resize(src_elements);
+        cl_int read_err = clEnqueueReadBuffer(m_cl_cmd_queue,
+            left_disparity->data(),
+            CL_TRUE,
+            0,
+            disp_elements * sizeof(uint16_t),
+            debug_median_left.data(),
+            0, nullptr, nullptr);
+        CHECK_OCL_ERROR(read_err, "Reading median left disparity for invalid debug");
+        read_err = clEnqueueReadBuffer(m_cl_cmd_queue,
+            m_cu_res->d_right_disp.data(),
+            CL_TRUE,
+            0,
+            disp_elements * sizeof(uint16_t),
+            debug_median_right.data(),
+            0, nullptr, nullptr);
+        CHECK_OCL_ERROR(read_err, "Reading median right disparity for invalid debug");
+        read_err = clEnqueueReadBuffer(m_cl_cmd_queue,
+            left_img.data(),
+            CL_TRUE,
+            0,
+            src_elements * sizeof(input_type),
+            debug_left_pixels.data(),
+            0, nullptr, nullptr);
+        CHECK_OCL_ERROR(read_err, "Reading left image for invalid debug");
+    }
     m_cu_res->sgm_details.template check_consistency<input_type>(*left_disparity,
         m_cu_res->d_right_disp,
         left_img,
@@ -353,6 +405,36 @@ void StereoSGM<input_type>::execute(cl_mem left_pixels, cl_mem right_pixels, cl_
         m_params.subpixel,
         m_params.LR_max_diff,
         m_cl_cmd_queue);
+    if (debug_invalid)
+    {
+        debug_checked_left.resize(disp_elements);
+        cl_int read_err = clEnqueueReadBuffer(m_cl_cmd_queue,
+            left_disparity->data(),
+            CL_TRUE,
+            0,
+            disp_elements * sizeof(uint16_t),
+            debug_checked_left.data(),
+            0, nullptr, nullptr);
+        CHECK_OCL_ERROR(read_err, "Reading checked left disparity for invalid debug");
+        const debug::InvalidDisparityDebugStats stats =
+            debug::compute_invalid_disparity_debug_stats(
+                debug_wta_left.data(),
+                debug_median_left.data(),
+                debug_median_right.data(),
+                debug_checked_left.data(),
+                debug_left_pixels.data(),
+                m_width,
+                m_height,
+                m_dst_pitch,
+                m_src_pitch,
+                m_params.subpixel,
+                m_params.LR_max_diff);
+        debug::print_invalid_disparity_debug_stats(
+            stats,
+            debug::invalid_debug_label(),
+            m_width,
+            m_height);
+    }
     m_cu_res->sgm_details.correct_disparity_range(*left_disparity,
         m_width,
         m_height,

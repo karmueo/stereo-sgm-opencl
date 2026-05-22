@@ -404,6 +404,8 @@ int main(int argc, char* argv[])
         "{ calib | stereo-camchain.yaml | Stereo calibration YAML path }"
         "{ no_rectify | false | Disable stereo rectification }"
         "{ scale | 1.0 | Image scale factor before SGM computation, > 0 and <= 1 }"
+        "{ save_raw_disparity | false | Save raw 16-bit disparity PNG files under output_dir/raw }"
+        "{ debug | false | Print invalid disparity source statistics for each frame }"
         "{ profile | false | Print OpenCL kernel profiling }";
 
     cv::CommandLineParser parser(argc, argv, keys);
@@ -422,7 +424,17 @@ int main(int argc, char* argv[])
         const int disp_size = parser.get<int>("max_disparity");
         const int num_path = parser.get<int>("num_path");
         const double scale = parser.get<double>("scale");
+        const bool save_raw_disparity = parser.get<bool>("save_raw_disparity");
+        const bool debug_enabled = parser.get<bool>("debug");
         const bool profile_enabled = parser.get<bool>("profile");
+        if (debug_enabled)
+        {
+#ifdef _WIN32
+            _putenv_s("LIBSGM_OCL_DEBUG_INVALID", "1");
+#else
+            setenv("LIBSGM_OCL_DEBUG_INVALID", "1", 1);
+#endif
+        }
         if (profile_enabled)
         {
 #ifdef _WIN32
@@ -460,6 +472,11 @@ int main(int argc, char* argv[])
         }
         std::vector<LoadedPair> loaded = load_pairs(pairs, rectifier.get(), scale);
         create_directories(output_dir);
+        const std::string raw_output_dir = join_path(output_dir, "raw");
+        if (save_raw_disparity)
+        {
+            create_directories(raw_output_dir);
+        }
 
         const cv::Size img_size = loaded.front().left.size();
         const int input_type = loaded.front().left.type();
@@ -534,6 +551,14 @@ int main(int argc, char* argv[])
                 "clEnqueueWriteBuffer(left)");
             check_cl(clEnqueueWriteBuffer(queue, d_right, CL_TRUE, 0, image_bytes, right_gray.data, 0, nullptr, nullptr),
                 "clEnqueueWriteBuffer(right)");
+            if (debug_enabled)
+            {
+#ifdef _WIN32
+                _putenv_s("LIBSGM_OCL_DEBUG_LABEL", item.pair.suffix_with_ext.c_str());
+#else
+                setenv("LIBSGM_OCL_DEBUG_LABEL", item.pair.suffix_with_ext.c_str(), 1);
+#endif
+            }
             ssgm.execute(d_left, d_right, d_disp);
             check_cl(clEnqueueReadBuffer(queue, d_disp, CL_TRUE, 0, disp_bytes, disp.data, 0, nullptr, nullptr),
                 "clEnqueueReadBuffer(disparity)");
@@ -552,6 +577,15 @@ int main(int argc, char* argv[])
             if (!cv::imwrite(output_path, disp_to_save))
             {
                 throw std::runtime_error("failed to write disparity image: " + output_path);
+            }
+            if (save_raw_disparity)
+            {
+                const cv::Mat raw_disp_to_save = stereo_examples::prepare_raw_disparity_for_png(disp);
+                const std::string raw_output_path = join_path(raw_output_dir, "disparity_" + item.pair.output_stem + ".png");
+                if (!cv::imwrite(raw_output_path, raw_disp_to_save))
+                {
+                    throw std::runtime_error("failed to write raw disparity image: " + raw_output_path);
+                }
             }
 
             const double frame_fps = frame_ms > 0.0 ? 1000.0 / frame_ms : 0.0;

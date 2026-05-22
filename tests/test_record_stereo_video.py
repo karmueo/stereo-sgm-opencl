@@ -65,8 +65,8 @@ class RecordStereoVideoTest(unittest.TestCase):
 
         self.assertTrue(default_args.preview)
         self.assertFalse(no_preview_args.preview)
-        self.assertEqual(default_args.width, 1280)
-        self.assertEqual(default_args.height, 480)
+        self.assertEqual(default_args.width, 3840)
+        self.assertEqual(default_args.height, 1080)
         self.assertEqual(default_args.fps, 60)
         self.assertEqual(default_args.bitrate, 40000000)
         self.assertIsNone(default_args.preview_width)
@@ -125,7 +125,7 @@ class RecordStereoVideoTest(unittest.TestCase):
             screen_size_func=lambda: (1280, 720),
         )
 
-        self.assertEqual(preview_size, (1280, 480))
+        self.assertEqual(preview_size, (1280, 360))
 
     def test_resolve_preview_size_allows_manual_override(self):
         module = load_module()

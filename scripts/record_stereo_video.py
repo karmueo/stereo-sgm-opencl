@@ -19,16 +19,16 @@
        <output-dir>/right.mp4
 
 说明:
-    默认采集 /dev/video11 的 1280x480@60 MJPEG 双目拼接流。
+    默认采集 /dev/video11 的 3840x1080@60 MJPEG 双目拼接流。
     录制时由 GStreamer 在 NV12/硬件路径中解码、裁剪并同步写入 left.mp4 和 right.mp4。
     MP4 按 GStreamer 实际 buffer 时间戳封装，不在解码/编码端强制固定输出帧率。
     视频通过 Rockchip MPP JPEG/H.264 硬件编解码器保存，默认 H.264 码率为 40000000 bps。
     有图形显示环境时会弹出 GStreamer/GTK 实时预览窗口，默认参数等价于
-    --video-sink waylandsink --width 1280 --height 480 --fps 60 --bitrate 40000000。
+    --video-sink waylandsink --width 3840 --height 1080 --fps 60 --bitrate 40000000。
     在 GNOME/Wayland 下，默认 waylandsink 会自动使用 gtkwaylandsink 嵌入 GTK 窗口，
     因此终端窗口和预览窗口都支持按键控制。
     开始/停止录制不会停止预览输出。
-    保存视频保持左右各 640x480 原始分辨率。
+    保存视频保持左右各 1920x1080 原始分辨率。
     按键在启动脚本的终端窗口和预览窗口中都生效。
     如果没有 DISPLAY/WAYLAND_DISPLAY，会自动退回终端按键控制。
     如果输出目录中已存在 left.mp4 或 right.mp4，开始录制时会直接覆盖。
@@ -85,8 +85,8 @@ def parse_args(argv=None):
     parser.add_argument("--start-key", default="s", help="key used to start recording")
     parser.add_argument("--stop-key", default="e", help="key used to stop recording")
     parser.add_argument("--fps", type=int, default=60, help="capture and output FPS")
-    parser.add_argument("--width", type=int, default=1280, help="captured frame width")
-    parser.add_argument("--height", type=int, default=480, help="captured frame height")
+    parser.add_argument("--width", type=int, default=3840, help="captured frame width")
+    parser.add_argument("--height", type=int, default=1080, help="captured frame height")
     parser.add_argument("--bitrate", type=int, default=40000000, help="H.264 bitrate")
     parser.add_argument(
         "--preview-width",
